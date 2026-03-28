@@ -1,0 +1,44 @@
+# ── Project Hyperion — Artifact & Secrets Blacklist ──
+
+# Environment & secrets (NEVER commit)
+.env
+*.secret
+*.key
+config.json
+credentials*.json
+secrets/
+service-account*.json
+
+# Python
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Runtime artifacts
+*.pid
+*.sock
+*.lock
+/logs/
+/tmp/
+/var/
+
+# Metrics & profiling
+*.prom
+/metrics/snapshots/
+/profiler/
+
+# Docker
+.dockerignore
+docker-compose.override.yml
