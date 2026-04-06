@@ -1,0 +1,38 @@
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  Project Hyperion  ·  Production Infrastructure Configuration       ║
+# ║  All tunables externalised — zero hard-coded magic values.          ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  workers: 20
+  backlog: 4096
+  keepalive_timeout_seconds: 120
+
+pipeline:
+  concurrency_lanes: 20
+  buffer_flush_interval_ms: 250
+  max_packet_size_bytes: 1048576        # 1 MiB
+  backpressure_queue_limit: 50000
+  lane_startup_stagger_ms: 50           # stagger boot to avoid thundering herd
+
+security:
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout_seconds: 30
+    half_open_max_probes: 1
+  rate_limiting:
+    algorithm: "token_bucket"
+    token_bucket_capacity: 10000
+    refill_rate_per_sec: 500
+    burst_multiplier: 1.5
+  gateway_mode: "FAIL_CLOSED"
+
+telemetry:
+  logging_mode: "APPEND_ONLY_HASH_CHAIN"
+  flush_to_vault_interval_sec: 1.0
+  vault_storage_dir: "/var/log/hyperion/vault/"
+  metrics_export_port: 9090
+  trace_sample_rate: 0.05               # 5 % traces for production
