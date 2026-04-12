@@ -1,6 +1,6 @@
 """
 Project Hyperion  ·  Core Orchestration Engine
-══════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════
 Abstract event-loop scheduler designed to govern 20x
 parallel execution lanes.  All payloads are synthetic;
 no business logic is embedded.
@@ -26,6 +26,12 @@ DEFAULT_LANES            = 20
 DEFAULT_BUFFER_MS        = 250
 DEFAULT_MAX_PACKET_BYTES = 1_048_576
 DEFAULT_BACKLOG          = 4096
+
+# Safety floors — prevent pathological zero/negative configs
+_MIN_LANES      = 1
+_MIN_BUFFER_MS  = 10
+_MIN_PACKET     = 1024
+_MIN_BACKLOG    = 1
 
 
 @dataclass
@@ -62,14 +68,31 @@ class Orchestrator:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         cfg = config or {}
-        self.total_lanes = max(1, cfg.get("concurrency_lanes", DEFAULT_LANES))
-        self.buffer_ms   = max(10, cfg.get("buffer_flush_interval_ms", DEFAULT_BUFFER_MS))
-        self.max_packet  = max(1024, cfg.get("max_packet_size_bytes", DEFAULT_MAX_PACKET_BYTES))
-        self.backlog     = max(1, cfg.get("backlog", DEFAULT_BACKLOG))
-        self.stagger_ms  = cfg.get("lane_startup_stagger_ms", 50)
+        self.total_lanes = max(_MIN_LANES, cfg.get("concurrency_lanes", DEFAULT_LANES))
+        self.buffer_ms   = max(_MIN_BUFFER_MS, cfg.get("buffer_flush_interval_ms", DEFAULT_BUFFER_MS))
+        self.max_packet  = max(_MIN_PACKET, cfg.get("max_packet_size_bytes", DEFAULT_MAX_PACKET_BYTES))
+        self.backlog     = max(_MIN_BACKLOG, cfg.get("backlog", DEFAULT_BACKLOG))
+        self.stagger_ms  = max(0, cfg.get("lane_startup_stagger_ms", 50))
         self.lanes: Dict[int, LaneContext] = {}
         self._running = False
         self._started_at: float = 0.0
+
+    # ── Validation ────────────────────────────────────────────────
+
+    @staticmethod
+    def validate_config(cfg: Dict[str, Any]) -> List[str]:
+        """Pre-flight config validation.  Returns a list of
+        human-readable warnings for out-of-range values."""
+        warnings: List[str] = []
+        lanes = cfg.get("concurrency_lanes", DEFAULT_LANES)
+        if lanes < _MIN_LANES:
+            warnings.append(f"concurrency_lanes={lanes} below minimum {_MIN_LANES}")
+        if lanes > 256:
+            warnings.append(f"concurrency_lanes={lanes} exceeds recommended maximum 256")
+        buf = cfg.get("buffer_flush_interval_ms", DEFAULT_BUFFER_MS)
+        if buf < _MIN_BUFFER_MS:
+            warnings.append(f"buffer_flush_interval_ms={buf} below minimum {_MIN_BUFFER_MS} ms")
+        return warnings
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -152,18 +175,23 @@ class Orchestrator:
             for lid, ctx in self.lanes.items()
         }
 
+    @property
+    def uptime_seconds(self) -> float:
+        if not self._running:
+            return 0.0
+        return time.monotonic() - self._started_at
+
 
 # ── Standalone entry-point (synthetic stress-test) ────────────────────
 
 async def main():
     orch = Orchestrator()
     await orch.boot_pipeline()
-    # Run synthetic load for 30 s, print lane summary, then exit
     await asyncio.sleep(30)
     summary = orch.lane_summary()
     total_packets = sum(s["packet_count"] for s in summary.values())
-    logger.info("Synthetic run complete  |  total_packets=%d  |  lanes=%d",
-                total_packets, len(summary))
+    logger.info("Synthetic run complete  |  total_packets=%d  |  lanes=%d  |  uptime=%.1fs",
+                total_packets, len(summary), orch.uptime_seconds)
     await orch.shutdown()
 
 if __name__ == "__main__":
