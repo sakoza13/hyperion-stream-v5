@@ -3,7 +3,8 @@ Project Hyperion  ·  Cryptographic Telemetry Vault
 ══════════════════════════════════════════════════════
 Append-only, hash-chained telemetry ledger.
 Every block is linked via SHA-256 to its predecessor,
-creating an immutable audit trail.
+creating an immutable audit trail.  Automatically logs
+circuit-breaker state transitions.
 
 Author:  Project Hyperion Engineering
 Status:  Bootstrapped — Architecture Validated
@@ -17,7 +18,6 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("hyperion.vault")
 
-# Genesis seed — anchors the entire chain
 GENESIS_SEED = b"HYPERION_GENESIS_ROOT_V5"
 
 
@@ -46,57 +46,56 @@ class TelemetryVault:
 
     Each block is hashed as:
         SHA-256( timestamp | serialized_payload | previous_hash )
-
-    The genesis block chains from GENESIS_SEED, and every
-    subsequent block carries the digest of its predecessor,
-    forming a tamper-evident chain suitable for compliance
-    auditing.
     """
 
     def __init__(self):
-        self._last_hash = hashlib.sha256(GENESIS_SEED).hexdigest()
+        self._last_hash   = hashlib.sha256(GENESIS_SEED).hexdigest()
         self._block_count = 0
+        self._trip_count  = 0
 
     # ── Core API ──────────────────────────────────────────────────
 
     def append(self, data: Dict[str, Any]) -> str:
-        """Commit a telemetry event to the ledger.
-        Returns the new block's hex digest."""
+        """Commit a telemetry event.  Returns the block digest."""
         ts      = time.time()
         payload = json.dumps(data, sort_keys=True)
         content = f"{ts}|{payload}|{self._last_hash}"
         digest  = hashlib.sha256(content.encode("utf-8")).hexdigest()
         self._last_hash = digest
         self._block_count += 1
-        logger.debug("Vault block %d committed  |  hash=%s", self._block_count, digest[:16])
         return digest
 
     def append_batch(self, items: List[Dict[str, Any]]) -> List[str]:
-        """Commit multiple events as sequential blocks.  Each block
-        chains to its immediate predecessor."""
+        """Commit multiple events as sequential blocks."""
         return [self.append(item) for item in items]
+
+    def log_breaker_event(self, event: str, breaker_state: str):
+        """Record a circuit-breaker state transition as a
+        cryptographically-chained telemetry event."""
+        self._trip_count += 1
+        self.append({
+            "source":    "circuit_breaker",
+            "event":     event,
+            "new_state": breaker_state,
+            "ordinal":   self._trip_count,
+        })
+        logger.info("Vault logged breaker event #%d  |  %s → %s",
+                    self._trip_count, event, breaker_state)
 
     # ── Integrity Verification ────────────────────────────────────
 
     def verify_chain(self, blocks: List[Dict[str, Any]]) -> bool:
-        """Replay-verify an entire ledger segment.
-
-        Recomputes every block hash from the genesis seed and
-        compares against the stored digest.  Returns False
-        immediately if any block fails to validate.
-        """
+        """Replay-verify an entire ledger segment."""
         running = hashlib.sha256(GENESIS_SEED).hexdigest()
         for blk in blocks:
             ts      = blk.get("ts", 0)
             payload = json.dumps(blk.get("data", {}), sort_keys=True)
             content = f"{ts}|{payload}|{running}"
-            expected = blk.get("hash", "")
+            expected   = blk.get("hash", "")
             recomputed = hashlib.sha256(content.encode("utf-8")).hexdigest()
             if recomputed != expected:
-                logger.error(
-                    "Chain integrity FAILED  |  expected=%s  |  got=%s",
-                    expected[:16], recomputed[:16],
-                )
+                logger.error("Chain integrity FAILED  |  expected=%s  |  got=%s",
+                             expected[:16], recomputed[:16])
                 return False
             running = expected
         logger.info("Chain integrity VERIFIED  |  blocks=%d", len(blocks))
@@ -107,6 +106,10 @@ class TelemetryVault:
     @property
     def block_count(self) -> int:
         return self._block_count
+
+    @property
+    def trip_count(self) -> int:
+        return self._trip_count
 
     @property
     def latest_hash(self) -> str:
