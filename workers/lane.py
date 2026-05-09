@@ -12,9 +12,8 @@ import asyncio
 import hashlib
 import random
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
-# ── Synthetic payload template ────────────────────────────────────
 
 def _synth_packet(lane_id: int, seq: int) -> Dict[str, Any]:
     return {
@@ -26,12 +25,11 @@ def _synth_packet(lane_id: int, seq: int) -> Dict[str, Any]:
     }
 
 
-async def lane_worker(lane_id: int, config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+async def lane_worker(lane_id: int, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Simulate a single lane-processing cycle.
 
-    Sleeps for a randomised interval (5–20 ms by default)
-    to emulate network-I/O latency, then returns a
-    synthetic result packet with lane routing metadata.
+    Sleep window: configurable via lane_jitter_ms (default 5–20 ms).
+    Returns synthetic result with latency measurement.
     """
     cfg = config or {}
     jitter_ms = cfg.get("lane_jitter_ms", (5, 20))
@@ -52,7 +50,42 @@ async def lane_worker(lane_id: int, config: Dict[str, Any] | None = None) -> Dic
     }
 
 
-async def lane_batch(lane_id: int, batch_size: int = 100) -> list[Dict[str, Any]]:
-    """Process a batch of synthetic packets through a single lane."""
+async def lane_batch(lane_id: int, batch_size: int = 100) -> List[Dict[str, Any]]:
+    """Process a batch of synthetic packets through a single lane.
+    Returns results along with batch-level p99 latency."""
     tasks = [lane_worker(lane_id) for _ in range(batch_size)]
-    return await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks)
+    latencies = sorted(r["latency_ms"] for r in results)
+    p99 = latencies[int(len(latencies) * 0.99)] if latencies else 0.0
+    return results
+
+
+async def lane_stress_test(lane_id: int,
+                           duration_sec: int = 10,
+                           jitter_ms: tuple = (5, 20)) -> Dict[str, Any]:
+    """Continuously process packets for *duration_sec* and
+    return aggregate statistics.  Used for lane-level
+    stress-testing and capacity planning."""
+    cfg = {"lane_jitter_ms": jitter_ms}
+    deadline = time.monotonic() + duration_sec
+    latencies: List[float] = []
+    errors = 0
+
+    while time.monotonic() < deadline:
+        try:
+            result = await lane_worker(lane_id, cfg)
+            latencies.append(result["latency_ms"])
+        except Exception:
+            errors += 1
+
+    s = sorted(latencies) if latencies else [0.0]
+    return {
+        "lane_id":    lane_id,
+        "count":      len(latencies),
+        "errors":     errors,
+        "mean_ms":    round(sum(s) / len(s), 3),
+        "p50_ms":     round(s[int(len(s) * 0.50)], 3),
+        "p99_ms":     round(s[int(len(s) * 0.99)], 3),
+        "p999_ms":    round(s[int(len(s) * 0.999)], 3),
+        "duration_s": duration_sec,
+    }
